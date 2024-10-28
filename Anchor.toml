@@ -1,0 +1,16 @@
+[features]
+seeds = false
+[programs.localnet]
+crowdfunding = "EjRgeVUydj4PDJtqeELAnmnX5bbyTi7y7StUGfPhUg5P"
+
+[registry]
+url = "https://anchor.projectserum.com"
+
+[provider]
+cluster = "devnet"
+wallet = "./id.json"
+
+[scripts]
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+
+
