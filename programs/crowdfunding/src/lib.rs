@@ -25,23 +25,23 @@ pub mod crowdfunding {
         Ok(())
     }
 
-    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> ProgramResult {
+    pub fn withdraw(ctx: Context<Withdraw>, amount: u64) -> Result<()> {
         let campaign = &mut ctx.accounts.campaign;
         let user = &mut ctx.accounts.user;
 
         if campaign.admin != *user.key {
-            return Err(ProgramError::InvalidAccountData.into());
+            return Err(ErrorCode::Unauthorized.into());
         }
 
         let rent = Rent::get()?;
         let rent_exempt_balance = rent.minimum_balance(campaign.to_account_info().data_len());
 
         if campaign.amount_donated < amount {
-            return Err(ProgramError::InsufficientFunds.into());
+            return Err(ErrorCode::InsufficientFunds.into());
         }
 
-        if campaign.to_account_info().lamports() - amount < rent_exempt_balance {
-            return Err(ProgramError::InsufficientFunds.into());
+        if campaign.to_account_info().lamports().saturating_sub(amount) < rent_exempt_balance {
+            return Err(ErrorCode::InsufficientFunds.into());
         }
 
         **campaign.to_account_info().try_borrow_mut_lamports()? -= amount;
@@ -51,11 +51,11 @@ pub mod crowdfunding {
         Ok(())
     }
 
-    pub fn donate(ctx: Context<Donate>, amount: u64) -> ProgramResult {
+    pub fn donate(ctx: Context<Donate>, amount: u64) -> Result<()> {
         let ix = anchor_lang::solana_program::system_instruction::transfer(
             &ctx.accounts.user.key(),
             &ctx.accounts.campaign.key(),
-            amount
+            amount,
         );
         anchor_lang::solana_program::program::invoke(
             &ix,
@@ -65,7 +65,7 @@ pub mod crowdfunding {
                 ctx.accounts.system_program.to_account_info(),
             ],
         )?;
-        (&mut ctx.accounts.campaign).amount_donated += amount;
+        ctx.accounts.campaign.amount_donated += amount;
         Ok(())
     }
 }
@@ -76,6 +76,10 @@ pub enum ErrorCode {
     NameTooLong,
     #[msg("The provided description is too long")]
     DescriptionTooLong,
+    #[msg("You are not authorized to perform this action")]
+    Unauthorized,
+    #[msg("Insufficient funds for withdrawal")]
+    InsufficientFunds,
 }
 
 #[derive(Accounts)]
@@ -83,7 +87,7 @@ pub struct Create<'info> {
     #[account(
         init,
         payer = user,
-        space = 8 + 32 + 4 + 50 * 4 + 4 + 100 * 4 + 8,
+        space = 8 + 32 + (4 + 50) + (4 + 100) + 8,
         seeds = [b"CAMPAIGN_DEMO", user.key().as_ref()],
         bump
     )]
@@ -92,6 +96,7 @@ pub struct Create<'info> {
     pub user: Signer<'info>,
     pub system_program: Program<'info, System>,
 }
+
 #[derive(Accounts)]
 pub struct Withdraw<'info> {
     #[account(mut)]
@@ -113,7 +118,7 @@ pub struct Donate<'info> {
 #[derive(Default)]
 pub struct Campaign {
     pub admin: Pubkey,      // 32 bytes
-    pub name: String,       // 4 + len * 4 bytes
-    pub description: String, // 4 + len * 4 bytes
+    pub name: String,       // 4 + len bytes
+    pub description: String, // 4 + len bytes
     pub amount_donated: u64, // 8 bytes
 }

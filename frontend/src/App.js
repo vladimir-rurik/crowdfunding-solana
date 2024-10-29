@@ -9,7 +9,7 @@ import {
 } from "@project-serum/anchor";
 import { Buffer } from "buffer";
 import idl from "./idl.json";
-import { AlertCircle, Wallet, Plus, RefreshCw, DollarSign, LogOut } from "lucide-react";
+import { AlertCircle, Wallet, Plus, RefreshCw, DollarSign, LogOut, X } from "lucide-react";
 
 window.Buffer = Buffer;
 
@@ -24,6 +24,9 @@ export default function App() {
   const [walletAddress, setWalletAddress] = useState(null);
   const [campaigns, setCampaigns] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [campaignName, setCampaignName] = useState("");
+  const [campaignDescription, setCampaignDescription] = useState("");
 
   const getProvider = () => {
     const connection = new Connection(network, {
@@ -94,14 +97,21 @@ export default function App() {
 
   const createCampaign = async () => {
 	try {
+	  console.log("Starting campaign creation...");
+	  if (!campaignName || !campaignDescription) {
+		throw new Error("Please fill in both name and description");
+	  }
+  
 	  setLoading(true);
 	  const provider = getProvider();
+	  console.log("Provider:", provider);
 	  const program = new Program(idl, programID, provider);
+	  console.log("Program:", program);
   
-	  // Get latest blockhash for transaction
+	  console.log("Getting latest blockhash...");
 	  const latestBlockhash = await provider.connection.getLatestBlockhash('confirmed');
   
-	  // Calculate the campaign PDA (Program Derived Address)
+	  console.log("Finding program address...");
 	  const [campaign] = PublicKey.findProgramAddressSync(
 		[
 		  utils.bytes.utf8.encode("CAMPAIGN_DEMO"),
@@ -110,54 +120,52 @@ export default function App() {
 		program.programId
 	  );
   
-	  // Check if campaign already exists
-	  const campaignAccount = await provider.connection.getAccountInfo(campaign);
-	  if (campaignAccount) {
-		throw new Error("Campaign already exists for this wallet");
-	  }
-  
-	  const tx = await program.methods
-		.create("Campaign Name", "Campaign Description")
-		.accounts({
-		  campaign: campaign,
-		  user: provider.wallet.publicKey,
-		  systemProgram: SystemProgram.programId,
-		})
-		.rpc({
-		  skipPreflight: false, // Enable preflight checks
-		  maxRetries: 5,
-		  commitment: 'confirmed',
-		  blockhash: latestBlockhash.blockhash,
-		  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-		});
-  
-	  // Wait for transaction confirmation
-	  const confirmation = await provider.connection.confirmTransaction({
-		signature: tx,
-		blockhash: latestBlockhash.blockhash,
-		lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-	  });
-  
-	  if (confirmation.value.err) {
-		throw new Error("Transaction failed to confirm");
-	  }
-  
-	  console.log("Created campaign with signature:", tx);
-	  await getCampaigns();
-	  showAlert("Campaign created successfully!");
-	} catch (error) {
-	  console.error("Error creating campaign:", error);
-	  showAlert(`Failed to create campaign: ${error.message}`);
-	} finally {
-	  setLoading(false);
-	}
+	  console.log("Campaign address:", campaign.toString());
+      const campaignAccount = await provider.connection.getAccountInfo(campaign);
+      if (campaignAccount) {
+        throw new Error("Campaign already exists for this wallet");
+      }
+
+      const tx = await program.methods
+        .create(campaignName, campaignDescription)
+        .accounts({
+          campaign: campaign,
+          user: provider.wallet.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .rpc({
+          skipPreflight: false,
+          maxRetries: 5,
+          commitment: 'confirmed',
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        });
+
+      await provider.connection.confirmTransaction({
+        signature: tx,
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+      });
+
+      await getCampaigns();
+      setShowCreateModal(false);
+      setCampaignName("");
+      setCampaignDescription("");
+      showAlert("Campaign created successfully!");
+    } catch (error) {
+      console.error("Error creating campaign:", error);
+      showAlert(`Failed to create campaign: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
   };
+
   const donate = async (publicKey) => {
     try {
       setLoading(true);
       const provider = getProvider();
       const program = new Program(idl, programID, provider);
-      const latestBlockhash = await provider.connection.getLatestBlockhash();
+      const latestBlockhash = await provider.connection.getLatestBlockhash('confirmed');
 
       await program.methods
         .donate(new BN(0.2 * web3.LAMPORTS_PER_SOL))
@@ -169,6 +177,7 @@ export default function App() {
         .rpc({
           skipPreflight: false,
           maxRetries: 3,
+          commitment: 'confirmed',
           blockhash: latestBlockhash.blockhash,
           lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
         });
@@ -177,91 +186,151 @@ export default function App() {
       showAlert("Donation successful!");
     } catch (error) {
       console.error("Donation error:", error);
-      showAlert("Failed to donate: " + error.message);
+      showAlert(`Failed to donate: ${error.message}`);
     } finally {
       setLoading(false);
     }
   };
 
   const withdraw = async (publicKey, adminKey) => {
-	try {
-	  setLoading(true);
-	  const provider = getProvider();
-	  const program = new Program(idl, programID, provider);
-  
-	  // Verify the connected wallet is the admin
-	  if (provider.wallet.publicKey.toString() !== adminKey.toString()) {
-		throw new Error("Only the campaign admin can withdraw funds");
-	  }
-  
-	  // Connect to the network
-	  const connection = new Connection(network, opts.preflightCommitment);
-	  
-	  // Get campaign account info
-	  const accountInfo = await connection.getAccountInfo(publicKey);
-	  if (!accountInfo) {
-		throw new Error("Campaign account not found");
-	  }
-  
-	  // Fetch current campaign data
-	  const campaign = await program.account.campaign.fetch(publicKey);
-	  
-	  // Calculate the rent exempt amount needed
-	  const rentExempt = await connection.getMinimumBalanceForRentExemption(
-		accountInfo.data.length
-	  );
-  
-	  // Calculate maximum withdrawable amount
-	  const currentBalance = accountInfo.lamports;
-	  const maxWithdraw = currentBalance - rentExempt;
-	  
-	  // Set withdraw amount (smaller of maxWithdraw or 0.2 SOL)
-	  const withdrawAmount = Math.min(
-		maxWithdraw,
-		0.2 * web3.LAMPORTS_PER_SOL
-	  );
-  
-	  if (withdrawAmount <= 0) {
-		throw new Error("Insufficient funds available for withdrawal after rent-exempt reserve");
-	  }
-  
-	  // Get latest blockhash
-	  const latestBlockhash = await provider.connection.getLatestBlockhash();
-  
-	  // Execute withdrawal
-	  const tx = await program.methods
-		.withdraw(new BN(withdrawAmount))
-		.accounts({
-		  campaign: publicKey,
-		  user: provider.wallet.publicKey,
-		})
-		.rpc({
-		  skipPreflight: false,
-		  maxRetries: 3,
-		  blockhash: latestBlockhash.blockhash,
-		  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-		});
-  
-	  // Wait for confirmation
-	  await connection.confirmTransaction({
-		blockhash: latestBlockhash.blockhash,
-		lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-		signature: tx
-	  });
-  
-	  await getCampaigns();
-	  showAlert(`Successfully withdrew ${withdrawAmount / web3.LAMPORTS_PER_SOL} SOL`);
-  
-	} catch (error) {
-	  console.error("Withdrawal error:", error);
-	  showAlert(error.message);
-	} finally {
-	  setLoading(false);
-	}
+    try {
+      setLoading(true);
+      const provider = getProvider();
+      const program = new Program(idl, programID, provider);
+
+      if (provider.wallet.publicKey.toString() !== adminKey.toString()) {
+        throw new Error("Only the campaign admin can withdraw funds");
+      }
+
+      const connection = new Connection(network, opts.preflightCommitment);
+      const accountInfo = await connection.getAccountInfo(publicKey);
+      if (!accountInfo) {
+        throw new Error("Campaign account not found");
+      }
+
+      const rentExempt = await connection.getMinimumBalanceForRentExemption(
+        accountInfo.data.length
+      );
+
+      const currentBalance = accountInfo.lamports;
+      const maxWithdraw = currentBalance - rentExempt;
+      const withdrawAmount = Math.min(
+        maxWithdraw,
+        0.2 * web3.LAMPORTS_PER_SOL
+      );
+
+      if (withdrawAmount <= 0) {
+        throw new Error("Insufficient funds available for withdrawal after rent-exempt reserve");
+      }
+
+      const latestBlockhash = await provider.connection.getLatestBlockhash();
+
+      const tx = await program.methods
+        .withdraw(new BN(withdrawAmount))
+        .accounts({
+          campaign: publicKey,
+          user: provider.wallet.publicKey,
+        })
+        .rpc({
+          skipPreflight: false,
+          maxRetries: 3,
+          blockhash: latestBlockhash.blockhash,
+          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        });
+
+      await connection.confirmTransaction({
+        blockhash: latestBlockhash.blockhash,
+        lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+        signature: tx
+      });
+
+      await getCampaigns();
+      showAlert(`Successfully withdrew ${withdrawAmount / web3.LAMPORTS_PER_SOL} SOL`);
+    } catch (error) {
+      console.error("Withdrawal error:", error);
+      showAlert(error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const showAlert = (message) => {
     alert(message);
+  };
+
+  const CreateCampaignModal = () => {
+    if (!showCreateModal) return null;
+
+    return (
+      <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-semibold text-gray-900">Create New Campaign</h2>
+			<button
+			onClick={() => {
+				console.log("Opening modal...");
+				setShowCreateModal(true);
+			}}
+			disabled={loading}
+			className="flex items-center gap-2 bg-purple-600 text-white rounded-lg py-2 px-4 hover:bg-purple-700 transition-colors disabled:opacity-50"
+			>
+			<Plus className="w-4 h-4" />
+			Create Campaign
+			</button>
+          </div>
+          
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Campaign Name
+              </label>
+              <input
+                type="text"
+                value={campaignName}
+                onChange={(e) => setCampaignName(e.target.value)}
+                maxLength={50}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Enter campaign name"
+              />
+            </div>
+            
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Campaign Description
+              </label>
+              <textarea
+                value={campaignDescription}
+                onChange={(e) => setCampaignDescription(e.target.value)}
+                maxLength={100}
+                rows={3}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500"
+                placeholder="Enter campaign description"
+              />
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="flex-1 px-4 py-2 text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={createCampaign}
+                disabled={loading || !campaignName || !campaignDescription}
+                className="flex-1 px-4 py-2 text-white bg-purple-600 rounded-md hover:bg-purple-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading ? (
+                  <RefreshCw className="w-5 h-5 animate-spin mx-auto" />
+                ) : (
+                  'Create Campaign'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   useEffect(() => {
@@ -306,7 +375,7 @@ export default function App() {
           <h1 className="text-3xl font-bold text-gray-900">Crowdfunding Campaigns</h1>
           <div className="flex gap-2">
             <button
-              onClick={createCampaign}
+              onClick={() => setShowCreateModal(true)}
               disabled={loading}
               className="flex items-center gap-2 bg-purple-600 text-white rounded-lg py-2 px-4 hover:bg-purple-700 transition-colors disabled:opacity-50"
             >
