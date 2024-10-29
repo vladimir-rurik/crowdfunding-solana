@@ -93,44 +93,65 @@ export default function App() {
   };
 
   const createCampaign = async () => {
-    try {
-      setLoading(true);
-      const provider = getProvider();
-      const program = new Program(idl, programID, provider);
-      const latestBlockhash = await provider.connection.getLatestBlockhash();
-
-      const [campaign] = await PublicKey.findProgramAddress(
-        [
-          utils.bytes.utf8.encode("CAMPAIGN_DEMO"),
-          provider.wallet.publicKey.toBuffer(),
-        ],
-        program.programId
-      );
-
-      await program.methods
-        .create("New Campaign", "Campaign Description")
-        .accounts({
-          campaign,
-          user: provider.wallet.publicKey,
-          systemProgram: SystemProgram.programId,
-        })
-        .rpc({
-          skipPreflight: true,
-          maxRetries: 3,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-        });
-
-      await getCampaigns();
-      showAlert("Campaign created successfully!");
-    } catch (error) {
-      console.error("Create campaign error:", error);
-      showAlert("Failed to create campaign: " + error.message);
-    } finally {
-      setLoading(false);
-    }
+	try {
+	  setLoading(true);
+	  const provider = getProvider();
+	  const program = new Program(idl, programID, provider);
+  
+	  // Get latest blockhash for transaction
+	  const latestBlockhash = await provider.connection.getLatestBlockhash('confirmed');
+  
+	  // Calculate the campaign PDA (Program Derived Address)
+	  const [campaign] = PublicKey.findProgramAddressSync(
+		[
+		  utils.bytes.utf8.encode("CAMPAIGN_DEMO"),
+		  provider.wallet.publicKey.toBuffer()
+		],
+		program.programId
+	  );
+  
+	  // Check if campaign already exists
+	  const campaignAccount = await provider.connection.getAccountInfo(campaign);
+	  if (campaignAccount) {
+		throw new Error("Campaign already exists for this wallet");
+	  }
+  
+	  const tx = await program.methods
+		.create("Campaign Name", "Campaign Description")
+		.accounts({
+		  campaign: campaign,
+		  user: provider.wallet.publicKey,
+		  systemProgram: SystemProgram.programId,
+		})
+		.rpc({
+		  skipPreflight: false, // Enable preflight checks
+		  maxRetries: 5,
+		  commitment: 'confirmed',
+		  blockhash: latestBlockhash.blockhash,
+		  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+		});
+  
+	  // Wait for transaction confirmation
+	  const confirmation = await provider.connection.confirmTransaction({
+		signature: tx,
+		blockhash: latestBlockhash.blockhash,
+		lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+	  });
+  
+	  if (confirmation.value.err) {
+		throw new Error("Transaction failed to confirm");
+	  }
+  
+	  console.log("Created campaign with signature:", tx);
+	  await getCampaigns();
+	  showAlert("Campaign created successfully!");
+	} catch (error) {
+	  console.error("Error creating campaign:", error);
+	  showAlert(`Failed to create campaign: ${error.message}`);
+	} finally {
+	  setLoading(false);
+	}
   };
-
   const donate = async (publicKey) => {
     try {
       setLoading(true);
@@ -163,42 +184,80 @@ export default function App() {
   };
 
   const withdraw = async (publicKey, adminKey) => {
-    try {
-      setLoading(true);
-      const provider = getProvider();
-      const program = new Program(idl, programID, provider);
-
-      if (provider.wallet.publicKey.toString() !== adminKey.toString()) {
-        throw new Error("Only the campaign admin can withdraw funds");
-      }
-
-      const latestBlockhash = await provider.connection.getLatestBlockhash();
-
-      await program.methods
-        .withdraw(new BN(0.2 * web3.LAMPORTS_PER_SOL))
-        .accounts({
-          campaign: publicKey,
-          user: provider.wallet.publicKey,
-        })
-        .rpc({
-          skipPreflight: false,
-          maxRetries: 3,
-          blockhash: latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-        });
-
-      await getCampaigns();
-      showAlert("Successfully withdrew funds!");
-    } catch (error) {
-      console.error("Withdrawal error:", error);
-      showAlert(
-        error.message.includes("0x1") 
-          ? "Insufficient funds for withdrawal"
-          : `Failed to withdraw: ${error.message}`
-      );
-    } finally {
-      setLoading(false);
-    }
+	try {
+	  setLoading(true);
+	  const provider = getProvider();
+	  const program = new Program(idl, programID, provider);
+  
+	  // Verify the connected wallet is the admin
+	  if (provider.wallet.publicKey.toString() !== adminKey.toString()) {
+		throw new Error("Only the campaign admin can withdraw funds");
+	  }
+  
+	  // Connect to the network
+	  const connection = new Connection(network, opts.preflightCommitment);
+	  
+	  // Get campaign account info
+	  const accountInfo = await connection.getAccountInfo(publicKey);
+	  if (!accountInfo) {
+		throw new Error("Campaign account not found");
+	  }
+  
+	  // Fetch current campaign data
+	  const campaign = await program.account.campaign.fetch(publicKey);
+	  
+	  // Calculate the rent exempt amount needed
+	  const rentExempt = await connection.getMinimumBalanceForRentExemption(
+		accountInfo.data.length
+	  );
+  
+	  // Calculate maximum withdrawable amount
+	  const currentBalance = accountInfo.lamports;
+	  const maxWithdraw = currentBalance - rentExempt;
+	  
+	  // Set withdraw amount (smaller of maxWithdraw or 0.2 SOL)
+	  const withdrawAmount = Math.min(
+		maxWithdraw,
+		0.2 * web3.LAMPORTS_PER_SOL
+	  );
+  
+	  if (withdrawAmount <= 0) {
+		throw new Error("Insufficient funds available for withdrawal after rent-exempt reserve");
+	  }
+  
+	  // Get latest blockhash
+	  const latestBlockhash = await provider.connection.getLatestBlockhash();
+  
+	  // Execute withdrawal
+	  const tx = await program.methods
+		.withdraw(new BN(withdrawAmount))
+		.accounts({
+		  campaign: publicKey,
+		  user: provider.wallet.publicKey,
+		})
+		.rpc({
+		  skipPreflight: false,
+		  maxRetries: 3,
+		  blockhash: latestBlockhash.blockhash,
+		  lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+		});
+  
+	  // Wait for confirmation
+	  await connection.confirmTransaction({
+		blockhash: latestBlockhash.blockhash,
+		lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
+		signature: tx
+	  });
+  
+	  await getCampaigns();
+	  showAlert(`Successfully withdrew ${withdrawAmount / web3.LAMPORTS_PER_SOL} SOL`);
+  
+	} catch (error) {
+	  console.error("Withdrawal error:", error);
+	  showAlert(error.message);
+	} finally {
+	  setLoading(false);
+	}
   };
 
   const showAlert = (message) => {
